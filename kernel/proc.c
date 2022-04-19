@@ -120,6 +120,13 @@ found:
     release(&p->lock);
     return 0;
   }
+  uint64 va = KSTACK((int)(p - proc));
+  p->kern_pagetable = proc_kvminit(va);
+  if(p->kern_pagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -142,6 +149,10 @@ freeproc(struct proc *p)
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
+  if(p->kern_pagetable) {
+    proc_freekernpagetable(p->kern_pagetable);
+  }
+  p->kern_pagetable = 0;
   p->sz = 0;
   p->pid = 0;
   p->parent = 0;
@@ -229,6 +240,7 @@ userinit(void)
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
+  kvmmapuser(p->kern_pagetable, p->pagetable, p->sz, 0);
 
   release(&p->lock);
 }
@@ -249,6 +261,7 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+  kvmmapuser(p->kern_pagetable, p->pagetable, sz, p->sz);
   p->sz = sz;
   return 0;
 }
@@ -294,6 +307,8 @@ fork(void)
   pid = np->pid;
 
   np->state = RUNNABLE;
+
+  kvmmapuser(np->kern_pagetable, np->pagetable, np->sz, 0);
 
   release(&np->lock);
 
@@ -473,6 +488,8 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        w_satp(MAKE_SATP(p->kern_pagetable));
+        sfence_vma();
         swtch(&c->context, &p->context);
 
         // Process is done running for now.
@@ -480,6 +497,8 @@ scheduler(void)
         c->proc = 0;
 
         found = 1;
+
+        kvminithart();
       }
       release(&p->lock);
     }
